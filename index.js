@@ -16,7 +16,8 @@ const ai = GEMINI_API_KEY
 // Main model fail/busy hole porer model e jabe
 const MODELS = [
   "gemini-3.8-flash",
-  "gemini-3.5-flash-lite"
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite"
 ];
 
 const SYSTEM_PROMPT = `
@@ -36,6 +37,14 @@ const SYSTEM_PROMPT = `
 `;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Quota shesh hole oi model ke kichu somoy skip korbe
+const cooldownUntil = {};
+
+function isQuota(error) {
+  const msg = String(error?.message || "");
+  return error?.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(msg);
+}
 
 function isBusy(error) {
   const msg = String(error?.message || "");
@@ -84,7 +93,9 @@ async function getAIReply(question) {
   }
 
   for (const model of MODELS) {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    if ((cooldownUntil[model] || 0) > Date.now()) continue;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await ai.models.generateContent({
           model,
@@ -105,8 +116,12 @@ async function getAIReply(question) {
           `Gemini error (${model}, try ${attempt + 1}):`,
           error.message
         );
+        if (isQuota(error)) {
+          cooldownUntil[model] = Date.now() + 60 * 60 * 1000; // 1 ghonta skip
+          break;
+        }
         if (!isBusy(error)) break; // onno error hole next model
-        await sleep(1000 * (attempt + 1));
+        await sleep(500);
       }
     }
   }
