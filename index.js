@@ -1,69 +1,107 @@
 
 import express from "express";
+import { GoogleGenAI } from "@google/genai";
 
 const app = express();
 app.use(express.json());
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "trendy_verify_2026";
+const VERIFY_TOKEN =
+  process.env.VERIFY_TOKEN || "trendy_verify_2026";
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+const ai = GEMINI_API_KEY
+  ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
+  : null;
 
 app.get("/", (req, res) => {
   res.send("Trendy Choice AI Bot is running!");
 });
 
 app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
+  if (
+    req.query["hub.mode"] === "subscribe" &&
+    req.query["hub.verify_token"] === VERIFY_TOKEN
+  ) {
+    return res.status(200).send(req.query["hub.challenge"]);
   }
   res.sendStatus(403);
 });
 
-async function reply(senderId, message) {
-  if (!PAGE_ACCESS_TOKEN) return;
+async function sendReply(id, message) {
+  const response = await fetch(
+    "https://graph.facebook.com/v23.0/me/messages",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id },
+        message: { text: message.slice(0, 1900) },
+        access_token: PAGE_ACCESS_TOKEN
+      })
+    }
+  );
 
-  await fetch("https://graph.facebook.com/v23.0/me/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: senderId },
-      message: { text: message },
-      access_token: PAGE_ACCESS_TOKEN
-    })
-  });
+  if (!response.ok) {
+    console.error("Facebook API error:", await response.text());
+  }
 }
 
-app.post("/webhook", async (req, res) => {
+async function getAIReply(question) {
+  if (!ai) {
+    return "দুঃখিত, আপাতত উত্তর দিতে সমস্যা হচ্ছে। আমাদের ইনবক্স টিম আপনাকে সাহায্য করবে।";
+  }
+
+  try {
+    const result = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: question,
+      config: {
+        systemInstruction: `
+তুমি Trendy Choice অনলাইন শপের বাংলা কাস্টমার সার্ভিস সহকারী।
+স্বাভাবিক, ভদ্র ও সংক্ষিপ্ত বাংলায় উত্তর দেবে।
+
+জানা তথ্য:
+- ঢাকায় ডেলিভারি চার্জ ৮০ টাকা।
+- ঢাকার বাইরে ডেলিভারি চার্জ ১২০ টাকা।
+- Cash on Delivery আছে। পণ্য হাতে পেয়ে দেখে পেমেন্ট করা যায়।
+- ওয়েবসাইট: https://r4yh4n-dev.github.io/trendy-choice/
+- WhatsApp: 01826459122
+
+পণ্যের দাম, স্টক, গ্যারান্টি বা বৈশিষ্ট্য সম্পর্কে তথ্য জানা না থাকলে বানিয়ে বলবে না।
+কাস্টমারকে পণ্যের নাম বা ছবি দিতে বলবে, অথবা WhatsApp/ইনবক্সে যোগাযোগ করতে বলবে।
+অপ্রাসঙ্গিক প্রশ্নে সংক্ষেপে জানাবে যে তুমি Trendy Choice-এর কাস্টমার সার্ভিস সহকারী।
+`
+      }
+    });
+
+    return result.text?.trim() ||
+      "দুঃখিত, উত্তর তৈরি করতে পারিনি। আমাদের ইনবক্স টিমের সঙ্গে যোগাযোগ করুন।";
+  } catch (error) {
+    console.error("Gemini error:", error.message);
+    return "দুঃখিত, আপাতত উত্তর দিতে সমস্যা হচ্ছে। একটু পরে আবার মেসেজ করুন।";
+  }
+}
+
+app.post("/webhook", (req, res) => {
   res.sendStatus(200);
+  if (!PAGE_ACCESS_TOKEN) return;
 
   for (const entry of req.body.entry || []) {
     for (const event of entry.messaging || []) {
-      if (!event.message || event.message.is_echo) continue;
+      if (
+        !event.message ||
+        event.message.is_echo ||
+        !event.sender?.id ||
+        !event.message.text
+      ) continue;
 
-      const text = (event.message.text || "").toLowerCase();
-      const sender = event.sender.id;
-      let answer;
+      const senderId = event.sender.id;
+      const question = event.message.text;
 
-      if (/দাম|price|কত টাকা/.test(text)) {
-        answer = "কোন প্রোডাক্টটির দাম জানতে চান? নাম বা ছবি পাঠান।";
-      } else if (/ডেলিভারি|delivery|কুরিয়ার/.test(text)) {
-        answer = "ঢাকায় ডেলিভারি চার্জ ৮০ টাকা, ঢাকার বাইরে ১২০ টাকা।";
-      } else if (/ক্যাশ|cod|পেমেন্ট|payment/.test(text)) {
-        answer = "আমাদের Cash on Delivery সুবিধা আছে। প্রোডাক্ট হাতে পেয়ে দেখে তারপর পেমেন্ট করতে পারবেন।";
-      } else if (/অর্ডার|order|কিনতে চাই/.test(text)) {
-        answer = "অর্ডার করতে প্রোডাক্টের নাম, আপনার নাম, ফোন নম্বর ও সম্পূর্ণ ঠিকানা দিন।";
-      } else {
-        answer = "ধন্যবাদ Trendy Choice-এ মেসেজ করার জন্য! 😊 কী জানতে চান লিখুন, প্রয়োজনে আমাদের টিম সাহায্য করবে।";
-      }
-
-      try {
-        await reply(sender, answer);
-      } catch (error) {
-        console.error("Reply failed:", error.message);
-      }
+      getAIReply(question)
+        .then(answer => sendReply(senderId, answer))
+        .catch(error => console.error("Reply error:", error.message));
     }
   }
 });
