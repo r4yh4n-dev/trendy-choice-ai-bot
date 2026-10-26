@@ -1,4 +1,3 @@
-
 import express from "express";
 import { GoogleGenAI } from "@google/genai";
 
@@ -13,6 +12,39 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ai = GEMINI_API_KEY
   ? new GoogleGenAI({ apiKey: GEMINI_API_KEY })
   : null;
+
+// Main model fail/busy hole porer model e jabe
+const MODELS = [
+  "gemini-3.8-flash",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite"
+];
+
+const SYSTEM_PROMPT = `
+তুমি Trendy Choice অনলাইন শপের বাংলা কাস্টমার সার্ভিস সহকারী।
+স্বাভাবিক, ভদ্র ও সংক্ষিপ্ত বাংলায় উত্তর দেবে।
+
+জানা তথ্য:
+- ঢাকায় ডেলিভারি চার্জ ৮০ টাকা।
+- ঢাকার বাইরে ডেলিভারি চার্জ ১২০ টাকা।
+- Cash on Delivery আছে। পণ্য হাতে পেয়ে দেখে পেমেন্ট করা যায়।
+- ওয়েবসাইট: https://r4yh4n-dev.github.io/trendy-choice/
+- WhatsApp: 01826459122
+
+পণ্যের দাম, স্টক, গ্যারান্টি বা বৈশিষ্ট্য সম্পর্কে তথ্য জানা না থাকলে বানিয়ে বলবে না।
+কাস্টমারকে পণ্যের নাম বা ছবি দিতে বলবে, অথবা WhatsApp/ইনবক্সে যোগাযোগ করতে বলবে।
+অপ্রাসঙ্গিক প্রশ্নে সংক্ষেপে জানাবে যে তুমি Trendy Choice-এর কাস্টমার সার্ভিস সহকারী।
+`;
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function isBusy(error) {
+  const msg = String(error?.message || "");
+  return (
+    [429, 500, 503].includes(error?.status) ||
+    /503|429|UNAVAILABLE|overloaded|high demand/i.test(msg)
+  );
+}
 
 app.get("/", (req, res) => {
   res.send("Trendy Choice AI Bot is running!");
@@ -52,35 +84,35 @@ async function getAIReply(question) {
     return "দুঃখিত, আপাতত উত্তর দিতে সমস্যা হচ্ছে। আমাদের ইনবক্স টিম আপনাকে সাহায্য করবে।";
   }
 
-  try {
-    const result = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: question,
-      config: {
-        systemInstruction: `
-তুমি Trendy Choice অনলাইন শপের বাংলা কাস্টমার সার্ভিস সহকারী।
-স্বাভাবিক, ভদ্র ও সংক্ষিপ্ত বাংলায় উত্তর দেবে।
+  for (const model of MODELS) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const result = await ai.models.generateContent({
+          model,
+          contents: question,
+          config: {
+            systemInstruction: SYSTEM_PROMPT
+          }
+        });
 
-জানা তথ্য:
-- ঢাকায় ডেলিভারি চার্জ ৮০ টাকা।
-- ঢাকার বাইরে ডেলিভারি চার্জ ১২০ টাকা।
-- Cash on Delivery আছে। পণ্য হাতে পেয়ে দেখে পেমেন্ট করা যায়।
-- ওয়েবসাইট: https://r4yh4n-dev.github.io/trendy-choice/
-- WhatsApp: 01826459122
-
-পণ্যের দাম, স্টক, গ্যারান্টি বা বৈশিষ্ট্য সম্পর্কে তথ্য জানা না থাকলে বানিয়ে বলবে না।
-কাস্টমারকে পণ্যের নাম বা ছবি দিতে বলবে, অথবা WhatsApp/ইনবক্সে যোগাযোগ করতে বলবে।
-অপ্রাসঙ্গিক প্রশ্নে সংক্ষেপে জানাবে যে তুমি Trendy Choice-এর কাস্টমার সার্ভিস সহকারী।
-`
+        const text = result.text?.trim();
+        if (text) {
+          console.log(`Reply from ${model}`);
+          return text;
+        }
+        break; // khali reply hole next model
+      } catch (error) {
+        console.error(
+          `Gemini error (${model}, try ${attempt + 1}):`,
+          error.message
+        );
+        if (!isBusy(error)) break; // onno error hole next model
+        await sleep(1000 * (attempt + 1));
       }
-    });
-
-    return result.text?.trim() ||
-      "দুঃখিত, উত্তর তৈরি করতে পারিনি। আমাদের ইনবক্স টিমের সঙ্গে যোগাযোগ করুন।";
-  } catch (error) {
-    console.error("Gemini error:", error.message);
-    return "দুঃখিত, আপাতত উত্তর দিতে সমস্যা হচ্ছে। একটু পরে আবার মেসেজ করুন।";
+    }
   }
+
+  return "দুঃখিত, আপাতত উত্তর দিতে সমস্যা হচ্ছে। একটু পরে আবার মেসেজ করুন, অথবা WhatsApp-এ যোগাযোগ করুন: 01826459122";
 }
 
 app.post("/webhook", (req, res) => {
