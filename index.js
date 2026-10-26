@@ -16,8 +16,7 @@ const ai = GEMINI_API_KEY
 // Main model fail/busy hole porer model e jabe
 const MODELS = [
   "gemini-3.8-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
+  "gemini-3.5-flash-lite"
 ];
 
 const SYSTEM_PROMPT = `
@@ -85,7 +84,7 @@ async function getAIReply(question) {
   }
 
   for (const model of MODELS) {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const result = await ai.models.generateContent({
           model,
